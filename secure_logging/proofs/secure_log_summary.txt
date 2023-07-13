@@ -1,0 +1,30 @@
+maude tool: 'maude'
+ checking version: 3.1. OK.
+ checking installation: OK.
+
+
+analyzing: secure_log.spthy
+
+------------------------------------------------------------------------------
+analyzed: secure_log.spthy
+
+  output:          proofs/secure_log_analyzed.spthy
+  processing time: 0.982340372s
+  log_can_be_verified (exists-trace): verified (7 steps)
+  verified_log_is_complete (all-traces): verified (4 steps)
+  verified_log_contains_only_valid_pm_objects (all-traces): verified (9 steps)
+
+------------------------------------------------------------------------------
+
+==============================================================================
+summary of summaries:
+
+analyzed: secure_log.spthy
+
+  output:          proofs/secure_log_analyzed.spthy
+  processing time: 0.982340372s
+  log_can_be_verified (exists-trace): verified (7 steps)
+  verified_log_is_complete (all-traces): verified (4 steps)
+  verified_log_contains_only_valid_pm_objects (all-traces): verified (9 steps)
+
+==============================================================================

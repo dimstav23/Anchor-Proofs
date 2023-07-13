@@ -1,0 +1,282 @@
+theory SecureLog begin
+
+// Function signature and definition of the equational theory E
+
+builtins: multiset
+functions: adec/2, aenc/2, fst/1, h/1, hmac/2, pair/2, pk/1, sdec/2,
+           senc/2, sign/2, snd/1, true/0, verify/3
+equations:
+    adec(aenc(x.1, pk(x.2)), x.2) = x.1,
+    fst(<x.1, x.2>) = x.1,
+    sdec(senc(x.1, x.2), x.2) = x.1,
+    snd(<x.1, x.2>) = x.2,
+    verify(sign(x.1, x.2), x.1, pk(x.2)) = true
+
+
+
+rule (modulo E) setup_environment:
+   [ Fr( ~key ) ] --[ EnvironmentSetup( ~key ) ]-> [ !SecretKey( ~key ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) reveal_key:
+   [ !SecretKey( key ) ] --[ KeyRevealed( key ) ]-> [ Out( key ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) hw_count_increase:
+   [ ] --[ CountersAttested( ) ]-> [ ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) pm_object_write:
+   [ Fr( ~pm_object ) ]
+  --[ PmObjectWrite( ~pm_object ) ]->
+   [ PmObjectWriteStage1( ~pm_object ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) log_counter_increment_request:
+   [ Fr( sw_ctr_var ), PmObjectWriteStage1( pm_object ) ]
+  -->
+   [
+   TrustedChannel( <'log_counter_increment_request', sw_ctr_var> ),
+   PmObjectWriteStage2( pm_object, sw_ctr_var )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) log_counter_increment_reply:
+   [ TrustedChannel( <'log_counter_increment_request', sw_ctr_var> ) ]
+  --[ SWCount( sw_ctr_var ) ]->
+   [ TrustedChannel( <'sw_count_increased', sw_ctr_var> ), Out( sw_ctr_var )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) send_pm_object_to_logging_layer:
+   [
+   TrustedChannel( <'sw_count_increased', sw_ctr_var> ),
+   PmObjectWriteStage2( pm_object, sw_ctr_var )
+   ]
+  -->
+   [ TrustedChannel( <'append_to_log', pm_object, sw_ctr_var> ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) append_object_snapshot_entry:
+   [
+   TrustedChannel( <'append_to_log', pm_object, sw_count> ), Fr( ~log_id ),
+   !SecretKey( key )
+   ]
+  --[
+  LogAppend( ~log_id,
+             <senc(pm_object, key), sw_count, 
+              hmac(<senc(pm_object, key), sw_count>, key)>
+  )
+  ]->
+   [
+   Out( ~log_id ),
+   Out( <senc(pm_object, key), sw_count, 
+         hmac(<senc(pm_object, key), sw_count>, key)>
+   ),
+   TrustedChannel( <'stabilized', pm_object, sw_count> )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) stabilization_point:
+   [ TrustedChannel( <'stabilized', pm_object, sw_ctr_var> ) ]
+  --[ Stabilized( pm_object ) ]->
+   [ ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) atk_remove_log:
+   [ In( log_id ) ] --[ LogRemove( log_id ) ]-> [ ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) atk_add_log:
+   [ Fr( ~log_id ), In( entry ) ]
+  --[ LogAppend( ~log_id, entry ) ]->
+   [ Out( ~log_id ) ]
+
+  /* has exactly the trivial AC variant */
+
+restriction Restr_verify_log_1:
+  "∀ x #NOW x.1 x.2.
+    (Restr_verify_log_1( x, x.1, x.2 ) @ #NOW) ⇒
+    (∀ #attest.
+      (CountersAttested( ) @ #attest) ⇒
+      (∀ sw_count #sw_inc.
+        ((#sw_inc < #attest) ∧ (SWCount( sw_count ) @ #sw_inc)) ⇒
+        (∃ log_id pm_obj #j.
+          ((LogAppend( log_id,
+                       <senc(pm_obj, x), sw_count, hmac(<senc(pm_obj, x.1), sw_count>, x.2)>
+            ) @ #j) ∧
+           (¬(∃ #d. LogRemove( log_id ) @ #d))) ∧
+          (∀ id2 p2 h2 #k.
+            (LogAppend( id2, <p2, sw_count, h2> ) @ #k) ⇒ (id2 = log_id)))))"
+
+rule (modulo E) verify_log:
+   [ !SecretKey( key ) ]
+  --[ VerifiedLog( ), Restr_verify_log_1( key, key, key ) ]->
+   [ ]
+
+  /* has exactly the trivial AC variant */
+
+restriction only_valid_formatted_log_entries:
+  "∀ log_id entry key #j #k.
+    ((LogAppend( log_id, entry ) @ #j) ∧ (EnvironmentSetup( key ) @ #k)) ⇒
+    (∃ pm_obj sw_count.
+      entry =
+      <senc(pm_obj, key), sw_count, hmac(<senc(pm_obj, key), sw_count>, key)>)"
+
+lemma log_can_be_verified:
+  exists-trace
+  "(¬(∃ k #i. KeyRevealed( k ) @ #i)) ∧
+   (∃ #i.
+     (VerifiedLog( ) @ #i) ∧
+     (∃ id entry #j #k.
+       (((#j < #k) ∧ (#k < #i)) ∧ (LogAppend( id, entry ) @ #j)) ∧
+       (CountersAttested( ) @ #k)))"
+/*
+guarded formula characterizing all satisfying traces:
+"(∀ k #i. (KeyRevealed( k ) @ #i) ⇒ ⊥) ∧
+ (∃ #i.
+   (VerifiedLog( ) @ #i)
+  ∧
+   ∃ id entry #j #k.
+    (LogAppend( id, entry ) @ #j) ∧ (CountersAttested( ) @ #k)
+   ∧
+    (#j < #k) ∧ (#k < #i))"
+*/
+simplify
+solve( !SecretKey( key ) ▶₀ #i )
+  case setup_environment
+  solve( LogAppend( id,
+                    <senc(pm_obj, ~key), sw_count, hmac(<senc(pm_obj, ~key), sw_count>, ~key)
+                    >
+         ) @ #j )
+    case append_object_snapshot_entry
+    solve( TrustedChannel( <'append_to_log', pm_obj, sw_count> ) ▶₀ #j )
+      case send_pm_object_to_logging_layer
+      solve( !SecretKey( ~key ) ▶₂ #j )
+        case setup_environment
+        solve( LogAppend( ~log_id,
+                          <senc(pm_obj, ~key), ~n, hmac(<senc(pm_obj, ~key), ~n>, ~key)>
+               ) @ #j.1 )
+          case append_object_snapshot_entry
+          SOLVED // trace found
+        qed
+      qed
+    qed
+  qed
+qed
+
+lemma verified_log_is_complete:
+  all-traces
+  "(∃ k #i. KeyRevealed( k ) @ #i) ∨
+   (∀ #verif_point #hw_count pm_obj #stbl_point.
+     (((((#stbl_point < #hw_count) ∧ (#hw_count < #verif_point)) ∧
+        (Stabilized( pm_obj ) @ #stbl_point)) ∧
+       (CountersAttested( ) @ #hw_count)) ∧
+      (VerifiedLog( ) @ #verif_point)) ⇒
+     (∃ log_id sw_count key #j.
+       (LogAppend( log_id,
+                   <senc(pm_obj, key), sw_count, hmac(<senc(pm_obj, key), sw_count>, key)>
+        ) @ #j) ∧
+       (¬(∃ #d. (#d < #verif_point) ∧ (LogRemove( log_id ) @ #d)))))"
+/*
+guarded formula characterizing all counter-examples:
+"(∀ k #i. (KeyRevealed( k ) @ #i) ⇒ ⊥) ∧
+ (∃ #verif_point #hw_count pm_obj #stbl_point.
+   (Stabilized( pm_obj ) @ #stbl_point) ∧
+   (CountersAttested( ) @ #hw_count) ∧
+   (VerifiedLog( ) @ #verif_point)
+  ∧
+   (#stbl_point < #hw_count) ∧
+   (#hw_count < #verif_point) ∧
+   (∀ log_id sw_count key #j.
+     (LogAppend( log_id,
+                 <senc(pm_obj, key), sw_count, hmac(<senc(pm_obj, key), sw_count>, key)>
+      ) @ #j)
+    ⇒
+     ∃ #d. (LogRemove( log_id ) @ #d) ∧ #d < #verif_point))"
+*/
+simplify
+solve( !SecretKey( key ) ▶₀ #verif_point )
+  case setup_environment
+  solve( TrustedChannel( <'stabilized', pm_obj, sw_ctr_var>
+         ) ▶₀ #stbl_point )
+    case append_object_snapshot_entry
+    by contradiction /* from formulas */
+  qed
+qed
+
+lemma verified_log_contains_only_valid_pm_objects:
+  all-traces
+  "(∃ k #i. KeyRevealed( k ) @ #i) ∨
+   (∀ #verif_point #hw_count log_id entry #entry_added.
+     (((((#entry_added < #hw_count) ∧ (#hw_count < #verif_point)) ∧
+        (LogAppend( log_id, entry ) @ #entry_added)) ∧
+       (CountersAttested( ) @ #hw_count)) ∧
+      (VerifiedLog( ) @ #verif_point)) ⇒
+     ((∃ pm_obj key sw_count #w.
+        ((entry =
+          <senc(pm_obj, key), sw_count, hmac(<senc(pm_obj, key), sw_count>, key)
+          >) ∧
+         (#w < #entry_added)) ∧
+        (PmObjectWrite( pm_obj ) @ #w)) ∨
+      (∃ #d. (#d < #verif_point) ∧ (LogRemove( log_id ) @ #d))))"
+/*
+guarded formula characterizing all counter-examples:
+"(∀ k #i. (KeyRevealed( k ) @ #i) ⇒ ⊥) ∧
+ (∃ #verif_point #hw_count log_id entry #entry_added.
+   (LogAppend( log_id, entry ) @ #entry_added) ∧
+   (CountersAttested( ) @ #hw_count) ∧
+   (VerifiedLog( ) @ #verif_point)
+  ∧
+   (#entry_added < #hw_count) ∧
+   (#hw_count < #verif_point) ∧
+   (∀ pm_obj key sw_count #w.
+     (entry =
+      <senc(pm_obj, key), sw_count, hmac(<senc(pm_obj, key), sw_count>, key)
+      >) ∧
+     (PmObjectWrite( pm_obj ) @ #w)
+    ⇒
+     ¬(#w < #entry_added)) ∧
+   (∀ #d. (LogRemove( log_id ) @ #d) ⇒ ¬(#d < #verif_point)))"
+*/
+simplify
+solve( !SecretKey( key ) ▶₀ #verif_point )
+  case setup_environment
+  solve( LogAppend( log_id,
+                    <senc(pm_obj, ~key), sw_count, hmac(<senc(pm_obj, ~key), sw_count>, ~key)
+                    >
+         ) @ #entry_added )
+    case append_object_snapshot_entry
+    solve( TrustedChannel( <'append_to_log', pm_obj, sw_count>
+           ) ▶₀ #entry_added )
+      case send_pm_object_to_logging_layer
+      by contradiction /* from formulas */
+    qed
+  next
+    case atk_add_log
+    solve( !KU( senc(pm_obj, ~key) ) @ #vk.1 )
+      case append_object_snapshot_entry
+      by contradiction /* from formulas */
+    next
+      case c_senc
+      solve( !KU( ~key ) @ #vk.6 )
+        case reveal_key
+        by contradiction /* from formulas */
+      qed
+    qed
+  qed
+qed
+
+/* All well-formedness checks were successful. */
+
+end
