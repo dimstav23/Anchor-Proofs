@@ -1,0 +1,30 @@
+maude tool: 'maude'
+ checking version: 3.1. OK.
+ checking installation: OK.
+
+
+analyzing: tls.spthy
+
+------------------------------------------------------------------------------
+analyzed: tls.spthy
+
+  output:          proofs/tls_analyzed.spthy
+  processing time: 2.989060413s
+  session_key_secrecy (all-traces): verified (95 steps)
+  injective_agree (all-traces): verified (44 steps)
+  session_key_setup_possible (exists-trace): verified (11 steps)
+
+------------------------------------------------------------------------------
+
+==============================================================================
+summary of summaries:
+
+analyzed: tls.spthy
+
+  output:          proofs/tls_analyzed.spthy
+  processing time: 2.989060413s
+  session_key_secrecy (all-traces): verified (95 steps)
+  injective_agree (all-traces): verified (44 steps)
+  session_key_setup_possible (exists-trace): verified (11 steps)
+
+==============================================================================

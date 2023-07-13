@@ -1,0 +1,433 @@
+theory AnchorAttestation begin
+
+// Function signature and definition of the equational theory E
+
+functions: adec/2, aenc/2, fst/1, gen_app_report/1, gen_qe_report/1, h/1,
+           pair/2, pk/1, sdec/2, senc/2, sign/2, snd/1, true/0, verify/3
+equations:
+    adec(aenc(x.1, pk(x.2)), x.2) = x.1,
+    fst(<x.1, x.2>) = x.1,
+    sdec(senc(x.1, x.2), x.2) = x.1,
+    snd(<x.1, x.2>) = x.2,
+    verify(sign(x.1, x.2), x.1, pk(x.2)) = true
+
+
+
+rule (modulo E) register_pk:
+   [ Fr( ~ltkA ) ]
+  --[ RegisterPk( $A ) ]->
+   [ !Ltk( $A, ~ltkA ), !Pk( $A, pk(~ltkA) ), Out( pk(~ltkA) ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) reveal_ltk:
+   [ !Ltk( A, ltkA ) ] --[ LtkRevealed( A ) ]-> [ Out( ltkA ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) setup_server:
+   [ !Ltk( $QE, ~ltk_qe ) ]
+  --[ ServerSetup( $S, $QE ) ]->
+   [ !QE( $S, $QE ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) server_run_akm:
+   [ !Ltk( $AKM, ~ltk_akm ) ]
+  --[ ServerRunAkm( $S, $AKM ) ]->
+   [ !AKM( $S, $AKM ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) akm_assign_app:
+   [ !AKM( $S, $AKM ) ]
+  --[ AkmAssignedApp( $AKM, $ANCHOR_APP ) ]->
+   [ !APP( $AKM, $ANCHOR_APP ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) intel_approves_qe:
+   [ !QE( $S, $QE ), !Ltk( $QE, ltk_qe ) ]
+  --[ IntelApprovedQE( $QE ) ]->
+   [ !IntelAttestationService( $QE, pk(ltk_qe) ) ]
+
+  /* has exactly the trivial AC variant */
+
+restriction only_one_qe_per_server:
+  "∀ s qe1 qe2 #i #j.
+    ((ServerSetup( s, qe1 ) @ #i) ∧ (ServerSetup( s, qe2 ) @ #j)) ⇒
+    ((#i = #j) ∧ (qe1 = qe2))"
+  // safety formula
+
+rule (modulo E) tls_handshake:
+   [ Fr( ~sid ), Fr( ~skey ) ]
+  --[ TlsConnectionEstablished( $C, $AKM ) ]->
+   [ !TlsSession( ~sid, $C, $AKM, ~skey ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) reveal_session_key:
+   [ !TlsSession( sid, $C, $AKM, skey ) ]
+  --[ SessionCompromized( sid ), SessionKeyReveal( sid, $C, $AKM, skey )
+  ]->
+   [ Out( skey ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) request_qe_quote:
+   [ !TlsSession( sid, $C, $AKM, skey ) ]
+  --[ QeQuoteRequest( $C, $AKM ) ]->
+   [ Out( senc(<'qeQuoteRequest', $C>, skey) ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) reply_to_qe_quote_request:
+   [
+   !TlsSession( sid, $C, $AKM, skey ),
+   In( senc(<'qeQuoteRequest', $C>, skey) ), !QE( $S, $QE ),
+   !AKM( $S, $AKM ), !Ltk( $QE, ltk_qe )
+   ]
+  --[ QeQuoteReply( $C, $AKM, sign(gen_qe_report($QE), ltk_qe) ) ]->
+   [
+   Out( senc(<'qeQuoteReply', $QE, sign(gen_qe_report($QE), ltk_qe)>, skey)
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+restriction Restr_receive_qe_quote_1:
+  "∀ x #NOW. (Restr_receive_qe_quote_1( x ) @ #NOW) ⇒ (x = true)"
+  // safety formula
+
+rule (modulo E) receive_qe_quote:
+   [
+   !TlsSession( sid, $C, $AKM, skey ),
+   In( senc(<'qeQuoteReply', $QE, quote_qe>, skey) ),
+   !IntelAttestationService( $QE, pk_qe )
+   ]
+  --[
+  QeQuoteReceive( $C, $AKM, quote_qe ), TrustQE( $C, $AKM, $QE ),
+  Restr_receive_qe_quote_1( verify(quote_qe, gen_qe_report($QE), pk_qe) )
+  ]->
+   [ ]
+
+  /*
+  rule (modulo AC) receive_qe_quote:
+     [
+     !TlsSession( sid, $C, $AKM, skey ),
+     In( senc(<'qeQuoteReply', $QE, quote_qe>, skey) ),
+     !IntelAttestationService( $QE, pk_qe )
+     ]
+    --[
+    QeQuoteReceive( $C, $AKM, quote_qe ), TrustQE( $C, $AKM, $QE ),
+    Restr_receive_qe_quote_1( z )
+    ]->
+     [ ]
+    variants (modulo AC)
+    1. $QE   = $QE.11
+       pk_qe = pk_qe.12
+       quote_qe
+             = quote_qe.13
+       z     = verify(quote_qe.13, gen_qe_report($QE.11), pk_qe.12)
+    
+    2. $QE   = $QE.12
+       pk_qe = pk(x.20)
+       quote_qe
+             = sign(gen_qe_report($QE.12), x.20)
+       z     = true
+  */
+
+restriction only_one_qe_trust_flow:
+  "∀ c akm qe #i.
+    (TrustQE( c, akm, qe ) @ #i) ⇒
+    ((∀ #j. (QeQuoteRequest( c, akm ) @ #j) ⇒ (#j < #i)) ∧
+     (∀ quote #j.
+       (QeQuoteReceive( c, akm, quote ) @ #j) ⇒ ((#j < #i) ∨ (#j = #i))))"
+  // safety formula
+
+rule (modulo E) request_app_quote:
+   [ !TlsSession( sid, $C, $AKM, skey ) ]
+  --[ AppQuoteRequest( $C, $AKM, $ANCHOR_APP ) ]->
+   [ Out( senc(<'appQuoteRequest', $C, $ANCHOR_APP>, skey) ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) reply_to_app_quote_request:
+   [
+   !TlsSession( sid, $C, $AKM, skey ),
+   In( senc(<'appQuoteRequest', $C, $ANCHOR_APP>, skey) ), !QE( $S, $QE ),
+   !AKM( $S, $AKM ), !APP( $AKM, $ANCHOR_APP ), !Ltk( $QE, ltk_qe )
+   ]
+  --[ AppQuoteReply( $C, $AKM, sign(gen_app_report($ANCHOR_APP), ltk_qe) )
+  ]->
+   [
+   Out( senc(<'akmQuoteReply', $ANCHOR_APP, 
+              sign(gen_app_report($ANCHOR_APP), ltk_qe)>,
+             skey)
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+restriction Restr_receive_akm_quote_1:
+  "∀ x #NOW x.1 x.2.
+    (Restr_receive_akm_quote_1( x, x.1, x.2 ) @ #NOW) ⇒
+    (∃ #i. TrustQE( x, x.1, x.2 ) @ #i)"
+
+restriction Restr_receive_akm_quote_2:
+  "∀ x #NOW. (Restr_receive_akm_quote_2( x ) @ #NOW) ⇒ (x = true)"
+  // safety formula
+
+rule (modulo E) receive_akm_quote:
+   [
+   !TlsSession( sid, $C, $AKM, skey ),
+   In( senc(<'akmQuoteReply', $ANCHOR_APP, quote_app>, skey) ),
+   !IntelAttestationService( $QE, pk_qe )
+   ]
+  --[
+  AppQuoteReceive( $C, $ANCHOR_APP, quote_app ),
+  TrustApp( $C, $AKM, $ANCHOR_APP ), TrustInQE( $C, $S, $QE ),
+  Restr_receive_akm_quote_1( $C, $AKM, $QE ),
+  Restr_receive_akm_quote_2( verify(quote_app, gen_app_report($ANCHOR_APP),
+                                    pk_qe)
+  )
+  ]->
+   [ ]
+
+  /*
+  rule (modulo AC) receive_akm_quote:
+     [
+     !TlsSession( sid, $C, $AKM, skey ),
+     In( senc(<'akmQuoteReply', $ANCHOR_APP, quote_app>, skey) ),
+     !IntelAttestationService( $QE, pk_qe )
+     ]
+    --[
+    AppQuoteReceive( $C, $ANCHOR_APP, quote_app ),
+    TrustApp( $C, $AKM, $ANCHOR_APP ), TrustInQE( $C, $S, $QE ),
+    Restr_receive_akm_quote_1( $C, $AKM, $QE ),
+    Restr_receive_akm_quote_2( z )
+    ]->
+     [ ]
+    variants (modulo AC)
+    1. $ANCHOR_APP
+             = $ANCHOR_APP.13
+       pk_qe = pk_qe.17
+       quote_app
+             = quote_app.18
+       z     = verify(quote_app.18, gen_app_report($ANCHOR_APP.13), pk_qe.17)
+    
+    2. $ANCHOR_APP
+             = $ANCHOR_APP.17
+       pk_qe = pk(x.31)
+       quote_app
+             = sign(gen_app_report($ANCHOR_APP.17), x.31)
+       z     = true
+  */
+
+restriction only_one_app_trust_flow:
+  "∀ c akm app #i.
+    (TrustApp( c, akm, app ) @ #i) ⇒
+    ((∀ #j. (AppQuoteRequest( c, akm, app ) @ #j) ⇒ (#j < #i)) ∧
+     (∀ quote #j.
+       (AppQuoteReceive( c, app, quote ) @ #j) ⇒ ((#j < #i) ∨ (#j = #i))))"
+  // safety formula
+
+lemma multiple_server_possible:
+  exists-trace
+  "∃ s1 s2 qe1 qe2 #i #j.
+    ((ServerSetup( s1, qe1 ) @ #i) ∧ (ServerSetup( s2, qe2 ) @ #j)) ∧
+    (¬(s1 = s2))"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ s1 s2 qe1 qe2 #i #j.
+  (ServerSetup( s1, qe1 ) @ #i) ∧ (ServerSetup( s2, qe2 ) @ #j)
+ ∧
+  ¬(s1 = s2)"
+*/
+simplify
+solve( !Ltk( $QE, ~ltk_qe ) ▶₀ #i )
+  case register_pk
+  solve( !Ltk( $QE.1, ~ltk_qe.1 ) ▶₀ #j )
+    case register_pk
+    SOLVED // trace found
+  qed
+qed
+
+lemma trusted_app_possible:
+  exists-trace
+  "∃ c app akm #i.
+    ((TrustApp( c, app, akm ) @ #i) ∧ (¬(∃ A #j. LtkRevealed( A ) @ #j))) ∧
+    (¬(∃ sid #j. SessionCompromized( sid ) @ #j))"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ c app akm #i.
+  (TrustApp( c, app, akm ) @ #i)
+ ∧
+  (∀ A #j. (LtkRevealed( A ) @ #j) ⇒ ⊥) ∧
+  (∀ sid #j. (SessionCompromized( sid ) @ #j) ⇒ ⊥)"
+*/
+simplify
+solve( !TlsSession( sid, $C, $AKM, skey ) ▶₀ #i )
+  case tls_handshake
+  solve( !IntelAttestationService( $QE, pk(x) ) ▶₂ #i )
+    case intel_approves_qe
+    solve( !TlsSession( sid.1, $C, $AKM, skey.1 ) ▶₀ #i.1 )
+      case tls_handshake
+      solve( !IntelAttestationService( $QE, pk(x) ) ▶₂ #i.1 )
+        case intel_approves_qe
+        solve( !KU( senc(<'akmQuoteReply', $ANCHOR_APP, 
+                          sign(gen_app_report($ANCHOR_APP), ~ltkA)>,
+                         ~skey)
+               ) @ #vk )
+          case reply_to_app_quote_request
+          solve( !KU( senc(<'qeQuoteReply', $QE, sign(gen_qe_report($QE), ~ltkA.1)
+                           >,
+                           ~skey.1)
+                 ) @ #vk.1 )
+            case reply_to_qe_quote_request
+            solve( !KU( senc(<'appQuoteRequest', $C, $ANCHOR_APP>, ~skey) ) @ #vk.2 )
+              case request_app_quote
+              solve( !KU( senc(<'qeQuoteRequest', $C>, ~skey.1) ) @ #vk.3 )
+                case request_qe_quote
+                SOLVED // trace found
+              qed
+            qed
+          qed
+        qed
+      qed
+    qed
+  qed
+qed
+
+lemma trusted_qe_possible:
+  exists-trace
+  "∃ c akm qe #i.
+    ((TrustQE( c, akm, qe ) @ #i) ∧ (¬(∃ A #j. LtkRevealed( A ) @ #j))) ∧
+    (¬(∃ sid #j. SessionCompromized( sid ) @ #j))"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ c akm qe #i.
+  (TrustQE( c, akm, qe ) @ #i)
+ ∧
+  (∀ A #j. (LtkRevealed( A ) @ #j) ⇒ ⊥) ∧
+  (∀ sid #j. (SessionCompromized( sid ) @ #j) ⇒ ⊥)"
+*/
+simplify
+solve( !TlsSession( sid, $C, $AKM, skey ) ▶₀ #i )
+  case tls_handshake
+  solve( !IntelAttestationService( $QE, pk(x) ) ▶₂ #i )
+    case intel_approves_qe
+    solve( !KU( senc(<'qeQuoteReply', $QE, sign(gen_qe_report($QE), ~ltkA)>,
+                     ~skey)
+           ) @ #vk )
+      case reply_to_qe_quote_request
+      solve( !KU( senc(<'qeQuoteRequest', $C>, ~skey) ) @ #vk.1 )
+        case request_qe_quote
+        SOLVED // trace found
+      qed
+    qed
+  qed
+qed
+
+lemma trusted_app:
+  all-traces
+  "∀ c akm app #i.
+    (TrustApp( c, akm, app ) @ #i) ⇒
+    (((∃ s qe #j #k #l #m.
+        (((ServerSetup( s, qe ) @ #j) ∧ (ServerRunAkm( s, akm ) @ #k)) ∧
+         (AkmAssignedApp( akm, app ) @ #l)) ∧
+        (IntelApprovedQE( qe ) @ #m)) ∨
+      (∃ qe #k. (#k < #i) ∧ (LtkRevealed( qe ) @ #k))) ∨
+     (∃ sid skey #k.
+       (#k < #i) ∧ (SessionKeyReveal( sid, c, akm, skey ) @ #k)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ c akm app #i.
+  (TrustApp( c, akm, app ) @ #i)
+ ∧
+  (∀ s qe #j #k #l #m.
+    (ServerSetup( s, qe ) @ #j) ∧
+    (ServerRunAkm( s, akm ) @ #k) ∧
+    (AkmAssignedApp( akm, app ) @ #l) ∧
+    (IntelApprovedQE( qe ) @ #m)
+   ⇒
+    ⊥) ∧
+  (∀ qe #k. (LtkRevealed( qe ) @ #k) ⇒ ¬(#k < #i)) ∧
+  (∀ sid skey #k.
+    (SessionKeyReveal( sid, c, akm, skey ) @ #k) ⇒ ¬(#k < #i))"
+*/
+simplify
+solve( !TlsSession( sid, $C, $AKM, skey ) ▶₀ #i )
+  case tls_handshake
+  solve( !IntelAttestationService( $QE, pk(x) ) ▶₂ #i )
+    case intel_approves_qe
+    solve( !TlsSession( sid.1, $C, $AKM, skey.1 ) ▶₀ #i.1 )
+      case tls_handshake
+      solve( !IntelAttestationService( $QE, pk(x) ) ▶₂ #i.1 )
+        case intel_approves_qe
+        solve( !KU( senc(<'akmQuoteReply', $ANCHOR_APP, 
+                          sign(gen_app_report($ANCHOR_APP), ~ltkA)>,
+                         ~skey)
+               ) @ #vk )
+          case c_senc
+          solve( !KU( ~skey ) @ #vk.3 )
+            case reveal_session_key
+            by contradiction /* from formulas */
+          qed
+        next
+          case reply_to_app_quote_request
+          by contradiction /* from formulas */
+        qed
+      qed
+    qed
+  qed
+qed
+
+lemma trusted_qe:
+  all-traces
+  "∀ c akm qe #i.
+    (TrustQE( c, akm, qe ) @ #i) ⇒
+    (((∃ s #j #k #l.
+        ((ServerSetup( s, qe ) @ #j) ∧ (ServerRunAkm( s, akm ) @ #k)) ∧
+        (IntelApprovedQE( qe ) @ #l)) ∨
+      (∃ #k. (#k < #i) ∧ (LtkRevealed( qe ) @ #k))) ∨
+     (∃ sid skey #k.
+       (#k < #i) ∧ (SessionKeyReveal( sid, c, akm, skey ) @ #k)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ c akm qe #i.
+  (TrustQE( c, akm, qe ) @ #i)
+ ∧
+  (∀ s #j #k #l.
+    (ServerSetup( s, qe ) @ #j) ∧
+    (ServerRunAkm( s, akm ) @ #k) ∧
+    (IntelApprovedQE( qe ) @ #l)
+   ⇒
+    ⊥) ∧
+  (∀ #k. (LtkRevealed( qe ) @ #k) ⇒ ¬(#k < #i)) ∧
+  (∀ sid skey #k.
+    (SessionKeyReveal( sid, c, akm, skey ) @ #k) ⇒ ¬(#k < #i))"
+*/
+simplify
+solve( !TlsSession( sid, $C, $AKM, skey ) ▶₀ #i )
+  case tls_handshake
+  solve( !IntelAttestationService( $QE, pk(x) ) ▶₂ #i )
+    case intel_approves_qe
+    solve( !KU( senc(<'qeQuoteReply', $QE, sign(gen_qe_report($QE), ~ltkA)>,
+                     ~skey)
+           ) @ #vk )
+      case c_senc
+      solve( !KU( ~skey ) @ #vk.2 )
+        case reveal_session_key
+        by contradiction /* from formulas */
+      qed
+    next
+      case reply_to_qe_quote_request
+      by contradiction /* from formulas */
+    qed
+  qed
+qed
+
+/* All well-formedness checks were successful. */
+
+end

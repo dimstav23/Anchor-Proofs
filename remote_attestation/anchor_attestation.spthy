@@ -1,0 +1,339 @@
+theory AnchorAttestation 
+begin
+
+builtins: hashing, symmetric-encryption, asymmetric-encryption, signing
+functions: gen_app_report/1, gen_qe_report/1
+
+/* ------------------------------------------------------------------------- */
+/* General Rules                                                             */
+/* ------------------------------------------------------------------------- */
+
+// Registers a new public key for an agent
+rule register_pk:
+    [ Fr(~ltkA) ]
+    --[ RegisterPk($A) ]->
+    [ !Ltk($A, ~ltkA), !Pk($A, pk(~ltkA)), Out(pk(~ltkA)) ]
+
+// Reveals the public key of an agent
+// Used to model compromized keys
+rule reveal_ltk:
+    [ !Ltk(A, ltkA) ] 
+    --[ 
+        LtkRevealed(A)    
+    ]-> 
+    [ Out(ltkA) ]
+
+// Sets up a server with a quotation engine (QE)
+rule setup_server:
+    [ !Ltk($QE, ~ltk_qe) ]
+    --[
+        ServerSetup($S, $QE)
+    ]->
+    [ !QE($S, $QE) ]
+
+// Runs the AKM on a server
+rule server_run_akm:
+    [ !Ltk($AKM, ~ltk_akm) ]
+    --[
+        ServerRunAkm($S, $AKM)
+    ]->
+    [ !AKM($S, $AKM) ]
+
+// Assigns an anchor app to be managed by AKM
+rule akm_assign_app:
+    [ !AKM($S, $AKM) ]
+    --[
+        AkmAssignedApp($AKM, $ANCHOR_APP)
+    ]->
+    [ !APP($AKM, $ANCHOR_APP) ]
+
+// Used to model Intel approved QEs
+rule intel_approves_qe:
+    [ !QE($S, $QE), !Ltk($QE, ltk_qe) ] 
+    --[ 
+        IntelApprovedQE($QE)    
+    ]-> 
+    [ !IntelAttestationService($QE, pk(ltk_qe)) ]
+
+// Limits the amount of Quotation Engine to one per server
+restriction only_one_qe_per_server:
+    "
+    All s qe1 qe2 #i #j.
+        ServerSetup(s, qe1) @ #i
+        & ServerSetup(s, qe2) @ #j
+    ==>
+        (#i = #j & qe1 = qe2)
+    "
+
+/* ------------------------------------------------------------------------- */
+/* TLS Session Setup                                                         */
+/* ------------------------------------------------------------------------- */
+
+// Models the creation of a TLS session
+// Detailed analysis of the TLS handshake is done in `tls.spthy`
+// This reuses the property that a secure symmetric key is established
+rule tls_handshake:
+    [ Fr(~sid), Fr(~skey) ]
+    --[
+        TlsConnectionEstablished($C, $AKM)
+    ]->
+    [
+        !TlsSession(~sid, $C, $AKM, ~skey)
+    ]
+
+// Reveals the session key of a TLS session
+// Used to model compromized keys
+rule reveal_session_key:
+    [ !TlsSession(sid, $C, $AKM, skey) ]
+    --[ 
+        SessionCompromized(sid),
+        SessionKeyReveal(sid, $C, $AKM, skey)
+    ]->
+    [ Out(skey) ]
+
+/* ------------------------------------------------------------------------- */
+/* Trust Quoting Enclave                                                       */
+/* ------------------------------------------------------------------------- */
+
+// Models a client sending a request for the QE quote 
+rule request_qe_quote:
+    [ !TlsSession(sid, $C, $AKM, skey) ]
+    --[
+        QeQuoteRequest($C, $AKM)
+    ]->
+    [
+        Out( senc{'qeQuoteRequest', $C}skey )
+    ]
+
+// Models the reply to a QE quote request
+rule reply_to_qe_quote_request:
+    let
+        report_qe = gen_qe_report($QE)
+        quote_qe = sign{report_qe}ltk_qe
+    in
+    [ 
+        !TlsSession(sid, $C, $AKM, skey), 
+        In( senc{'qeQuoteRequest', $C}skey ), 
+        !QE($S, $QE),
+        !AKM($S, $AKM),
+        !Ltk($QE, ltk_qe) 
+    ]
+    --[
+        QeQuoteReply($C, $AKM, quote_qe)
+    ]->
+    [
+        Out( senc{'qeQuoteReply', $QE, quote_qe}skey )
+    ]
+
+// Models the client receiving a QE quote
+rule receive_qe_quote:
+    [ 
+        !TlsSession(sid, $C, $AKM, skey), 
+        In( senc{'qeQuoteReply', $QE, quote_qe}skey ),
+        !IntelAttestationService($QE, pk_qe) 
+    ]
+    --[
+        _restrict(
+            verify(quote_qe, gen_qe_report($QE), pk_qe) = true
+        ),
+        QeQuoteReceive($C, $AKM, quote_qe),
+        TrustQE($C, $AKM, $QE)
+    ]->
+    [ ]
+
+// Limits the client to only attest the QE once
+restriction only_one_qe_trust_flow:
+    "
+    All c akm qe #i.
+        TrustQE(c, akm, qe) @ #i
+    ==>
+    (
+        (
+            All #j.
+                QeQuoteRequest(c, akm) @ #j
+            ==> 
+                ( #j < #i )
+        )
+        &
+        (
+            All quote #j.
+                QeQuoteReceive(c, akm, quote) @ #j
+            ==> 
+                ( #j < #i | #j = #i )
+        )
+    )
+    "
+
+/* ------------------------------------------------------------------------- */
+/* Trust Anchor App                                                          */
+/* ------------------------------------------------------------------------- */
+
+// Models a client sending a request for an Anchor app quote 
+rule request_app_quote:
+    [ !TlsSession(sid, $C, $AKM, skey) ]
+    --[
+        AppQuoteRequest($C, $AKM, $ANCHOR_APP)
+    ]->
+    [
+        Out( senc{'appQuoteRequest', $C, $ANCHOR_APP}skey )
+    ]
+
+// Models the reply to an Anchor app quote request
+rule reply_to_app_quote_request:
+    let
+        report_app = gen_app_report($ANCHOR_APP)
+        quote_app = sign{report_app}ltk_qe
+    in
+    [ 
+        !TlsSession(sid, $C, $AKM, skey), 
+        In( senc{'appQuoteRequest', $C, $ANCHOR_APP}skey ), 
+        !QE($S, $QE),
+        !AKM($S, $AKM),
+        !APP($AKM, $ANCHOR_APP),
+        !Ltk($QE, ltk_qe) 
+    ]
+    --[
+        AppQuoteReply($C, $AKM, quote_app)
+    ]->
+    [
+        Out( senc{'akmQuoteReply', $ANCHOR_APP, quote_app}skey )
+    ]
+
+// Models the client receiving an Anchor app quote
+rule receive_akm_quote:
+    [ 
+        !TlsSession(sid, $C, $AKM, skey), 
+        In( senc{'akmQuoteReply', $ANCHOR_APP, quote_app}skey ),
+        !IntelAttestationService($QE, pk_qe) 
+    ]
+    --[
+        _restrict(
+            Ex #i. TrustQE($C, $AKM, $QE) @ #i
+        ),
+        _restrict(
+            verify(quote_app, gen_app_report($ANCHOR_APP), pk_qe) = true
+        ),
+        AppQuoteReceive($C, $ANCHOR_APP, quote_app),
+        TrustApp($C, $AKM, $ANCHOR_APP),
+        TrustInQE($C, $S, $QE)
+    ]->
+    [ ]
+
+// Limits the client to only attest the Anchor app once
+restriction only_one_app_trust_flow:
+    "
+    All c akm app #i.
+        TrustApp(c, akm, app) @ #i
+    ==>
+    (
+        (
+            All #j.
+                AppQuoteRequest(c, akm, app) @ #j
+            ==> 
+                ( #j < #i )
+        )
+        &
+        (
+            All quote #j.
+                AppQuoteReceive(c, app, quote) @ #j
+            ==> 
+                ( #j < #i | #j = #i )
+        )
+    )
+    "
+
+/* ------------------------------------------------------------------------- */
+/* Control lemmas                                                            */
+/* ------------------------------------------------------------------------- */
+
+// Check that it is possible to setup multiple servers
+lemma multiple_server_possible:
+    exists-trace
+    "
+    Ex s1 s2 qe1 qe2 #i #j.
+        ServerSetup(s1, qe1) @ #i
+        & ServerSetup(s2, qe2) @ #j
+        & not (s1 = s2)
+    "
+
+// Check that it is possible to establish trust in an Anchor app
+lemma trusted_app_possible:
+    exists-trace
+    "
+    Ex c app akm #i.
+        TrustApp(c, app, akm) @ #i
+        & not (Ex A #j. LtkRevealed(A) @ #j)
+        & not (Ex sid #j. SessionCompromized(sid) @ #j)
+    "
+
+// Check that it is possible to establish trust in a QE
+lemma trusted_qe_possible:
+    exists-trace
+    "
+    Ex c akm qe #i.
+        TrustQE(c, akm, qe) @ #i
+        & not (Ex A #j. LtkRevealed(A) @ #j)
+        & not (Ex sid #j. SessionCompromized(sid) @ #j)
+    "
+
+/* ------------------------------------------------------------------------- */
+/* Security Properties                                                       */
+/* ------------------------------------------------------------------------- */
+
+/* Proof the following property:
+
+Assuming no long term keys and no session keys were revealed prior to the
+trust establishment, it holds that:
+
+Once a client trusts an Anchor app, attested through the process modeled above,
+it follows that the expected app is running in a trusted enclave, on hardware 
+having an Intel approved quotation engine.
+*/
+lemma trusted_app:
+    "
+    All c akm app #i.
+        TrustApp(c, akm, app) @ #i
+    ==>
+    (
+        ( Ex s qe #j #k #l #m. 
+            ServerSetup(s, qe) @ #j 
+            & ServerRunAkm(s, akm) @ #k 
+            & AkmAssignedApp(akm, app) @ #l
+            & IntelApprovedQE(qe) @ #m 
+        )
+        |
+        ( Ex qe #k. #k < #i & LtkRevealed(qe) @ #k)
+        |
+        ( Ex sid skey #k. #k < #i & SessionKeyReveal(sid, c, akm, skey) @ #k)
+    )        
+    "
+
+/* Proof the following property:
+
+Assuming no the long term keys and no session keys were revealed prior to the
+trust establishment, it holds that:
+
+Once a client trusts a quotation engine, attested through the process modeled 
+above, it follows that the quotation engine is approved by Intel and running on
+the server the session was established with.
+*/
+lemma trusted_qe:
+    "
+    All c akm qe #i.
+        TrustQE(c, akm, qe) @ #i
+    ==>
+    (
+        ( Ex s #j #k #l. 
+            ServerSetup(s, qe) @ #j 
+            & ServerRunAkm(s, akm) @ #k 
+            & IntelApprovedQE(qe) @ #l
+        )
+        |
+        ( Ex #k. #k < #i & LtkRevealed(qe) @ #k)
+        |
+        ( Ex sid skey #k. #k < #i & SessionKeyReveal(sid, c, akm, skey) @ #k)
+    )        
+    "
+
+
+end

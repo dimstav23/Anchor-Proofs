@@ -1,0 +1,34 @@
+maude tool: 'maude'
+ checking version: 3.1. OK.
+ checking installation: OK.
+
+
+analyzing: anchor_attestation.spthy
+
+------------------------------------------------------------------------------
+analyzed: anchor_attestation.spthy
+
+  output:          proofs/anchor_attestation_analyzed.spthy
+  processing time: 0.490206859s
+  multiple_server_possible (exists-trace): verified (4 steps)
+  trusted_app_possible (exists-trace): verified (10 steps)
+  trusted_qe_possible (exists-trace): verified (6 steps)
+  trusted_app (all-traces): verified (9 steps)
+  trusted_qe (all-traces): verified (7 steps)
+
+------------------------------------------------------------------------------
+
+==============================================================================
+summary of summaries:
+
+analyzed: anchor_attestation.spthy
+
+  output:          proofs/anchor_attestation_analyzed.spthy
+  processing time: 0.490206859s
+  multiple_server_possible (exists-trace): verified (4 steps)
+  trusted_app_possible (exists-trace): verified (10 steps)
+  trusted_qe_possible (exists-trace): verified (6 steps)
+  trusted_app (all-traces): verified (9 steps)
+  trusted_qe (all-traces): verified (7 steps)
+
+==============================================================================
