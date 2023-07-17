@@ -20,6 +20,6 @@ The analysis in `anchor_attestation.spthy` relies on some properties proven by `
 
 - In this way, Tamarin found at least one trace for all control lemmas and has proven that there is no trace leading to any state in which the Anchor app attestation lemma would be violated.
 
-- Thus, the Anchor app attestation lemma holds for our model. The proof artifacts can be found in the `proofs` folder. 
+- Thus, the Anchor app attestation lemma holds for our model. The proof artifacts can be found in the `proofs` folder. These were generated on a AMD EPYC 7713P 64-Core Processor with 500 GB of RAM.
 
 - It is recommended to also verify the results by running `tamarin-prover interactive .`, where you can interactively evaluate the results.
